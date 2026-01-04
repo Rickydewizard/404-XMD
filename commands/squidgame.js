@@ -25,6 +25,16 @@ module.exports = {
                 return;
             }
 
+            // Check if bot is admin
+            const botParticipant = groupInfo.participants.find(p => p.id === sock.user.id);
+            if (!botParticipant || !botParticipant.admin) {
+                await sock.sendMessage(chatId, { 
+                    text: "❌ I need to be an admin to kick players!",
+                    quoted: message 
+                });
+                return;
+            }
+
             // Filter non-admin members
             const nonAdminMembers = groupInfo.participants.filter(p => !p.admin);
             
@@ -40,22 +50,24 @@ module.exports = {
 
             // Game announcement message
             let gameMessage = `🔴 *Squid Game: Red Light,🟢Green Light*\n\n🎭 *Front Man*: (@${gameCreator})\n`;
-            gameMessage += nonAdminMembers.map(m => "@" + m.id.split("@")[0]).join("\n") + "\n\n";
-            gameMessage += "All other group members have been added as players! The game will start in 50 seconds..";
+            gameMessage += "📋 *Players:*\n" + nonAdminMembers.map((m, i) => `${i+1}. @${m.id.split("@")[0]}`).join("\n");
+            gameMessage += "\n\n⚠️ *WARNING:* This is a REAL elimination game! Players who break rules WILL BE KICKED!";
+            gameMessage += "\n\n⏳ The game will start in 30 seconds...";
 
             await sock.sendMessage(chatId, { 
                 text: gameMessage, 
                 mentions: nonAdminMembers.map(m => m.id) 
-            }, { quoted: message });
+            });
 
-            await delay(50000); // Wait 50 seconds
+            await delay(30000); // Wait 30 seconds
 
-            // Select 5 random players (not 50 as in original code - that seems like a typo)
-            let players = nonAdminMembers.sort(() => 0.5 - Math.random()).slice(0, 5);
+            // Select random players (5-10 players for optimal gameplay)
+            const numPlayers = Math.min(10, Math.max(5, nonAdminMembers.length));
+            let players = nonAdminMembers.sort(() => 0.5 - Math.random()).slice(0, numPlayers);
             let playersList = players.map((p, i) => `${i + 1}. @${p.id.split("@")[0]}`).join("\n");
 
             await sock.sendMessage(chatId, {
-                text: `🎮 *List of Players:*\n${playersList}\n\n🔔 The game is now starting... !`,
+                text: `🎮 *Selected Players (${players.length}):*\n${playersList}\n\n🔔 The game is now starting... !`,
                 mentions: players.map(p => p.id)
             });
 
@@ -63,68 +75,165 @@ module.exports = {
 
             // Game rules explanation
             let rulesMessage = `📜 *Rules of Squid Game:*\n\n`
-                + `1️⃣ During 🟥 *Red Light*, Players who send a message will be *eliminated* and *kicked* from the group.\n\n`
-                + `2️⃣ During 🟩 *Green Light*, Players must send a message. Those who remain silent will be eliminated.\n\n`
-                + `3️⃣ Game ends when only one player remains.\n\n`
-                + `🏆 Survive to become the _winner_ !`;
+                + `🟥 *RED LIGHT*: DO NOT SEND ANY MESSAGE!\n• If you send ANY message (text, image, video, sticker, etc.), you WILL BE KICKED IMMEDIATELY!\n\n`
+                + `🟩 *GREEN LIGHT*: YOU MUST SEND A MESSAGE!\n• You must send at least one message before time ends\n• If you don't send anything, you WILL BE KICKED!\n\n`
+                + `⏰ *Time Limit:* 10 seconds per round\n`
+                + `🏆 Last player remaining wins!`;
 
             await sock.sendMessage(chatId, { text: rulesMessage });
 
             await delay(5000);
 
             let remainingPlayers = [...players];
+            let messageTracker = new Map(); // Track who sent messages
             
-            // NOTE: This is a simplified version without message listening
-            // For a full implementation, you'd need to track messages in real-time
-            // This version will just simulate the game
+            // Clear previous messages tracker
+            messageTracker.clear();
             
-            const gamePhases = 3; // Number of game phases
-            for (let phase = 1; phase <= gamePhases && remainingPlayers.length > 1; phase++) {
-                let isGreenLight = Math.random() > 0.5;
-                let lightMessage = isGreenLight ? "🟩 *Green Light*" : "🟥 *Red Light*";
-                await sock.sendMessage(chatId, { text: `🔔 ${lightMessage} - Phase ${phase}` });
-
-                await delay(5000); // Wait 5 seconds
-
-                // Randomly eliminate some players (simulated)
-                const playersToEliminate = Math.floor(Math.random() * (remainingPlayers.length - 1)) + 1;
-                const eliminated = remainingPlayers.slice(0, playersToEliminate);
-                remainingPlayers = remainingPlayers.slice(playersToEliminate);
-
-                for (let player of eliminated) {
-                    let eliminationMessage = isGreenLight
-                        ? `❌ @${player.id.split("@")[0]} remained silent during 🟩 _Green Light_ and has been eliminated.`
-                        : `❌ @${player.id.split("@")[0]} wrote during 🟥 _Red Light_ and has been eliminated.`;
-
-                    await sock.sendMessage(chatId, {
-                        text: eliminationMessage,
-                        mentions: [player.id]
-                    });
-                    
-                    // NOTE: We're NOT actually kicking players for safety
-                    // To actually kick, uncomment this line:
-                    // await sock.groupParticipantsUpdate(chatId, [player.id], "remove");
+            const gameRounds = 5; // Number of game rounds
+            for (let round = 1; round <= gameRounds && remainingPlayers.length > 1; round++) {
+                // Clear tracker for new round
+                messageTracker.clear();
+                for (let player of remainingPlayers) {
+                    messageTracker.set(player.id, false);
                 }
-
-                await delay(2000);
-            }
-
-            if (remainingPlayers.length === 1) {
+                
+                let isGreenLight = Math.random() > 0.5;
+                let lightMessage = isGreenLight ? "🟩 *GREEN LIGHT*" : "🟥 *RED LIGHT*";
+                await sock.sendMessage(chatId, { 
+                    text: `⏱️ *Round ${round}/${gameRounds}*\n${lightMessage}\n\n${isGreenLight ? "✅ SEND A MESSAGE NOW!" : "❌ DO NOT SEND ANYTHING!"}\n\n⏰ 10 seconds...`,
+                    mentions: remainingPlayers.map(p => p.id)
+                });
+                
+                let roundStartTime = Date.now();
+                let roundEndTime = roundStartTime + 10000; // 10 seconds
+                
+                // Set up a message listener for this round
+                let roundMessages = [];
+                
+                // Create a one-time message handler
+                const messageHandler = async (msg) => {
+                    if (msg.key.remoteJid !== chatId) return;
+                    
+                    const sender = msg.key.participant || msg.key.remoteJid;
+                    const currentTime = Date.now();
+                    
+                    // Only process messages during game time
+                    if (currentTime > roundStartTime && currentTime < roundEndTime) {
+                        roundMessages.push({
+                            sender,
+                            time: currentTime
+                        });
+                        
+                        // Track that this player sent a message
+                        if (messageTracker.has(sender)) {
+                            messageTracker.set(sender, true);
+                        }
+                    }
+                };
+                
+                // Register the listener
+                sock.ev.on('messages.upsert', messageHandler);
+                
+                // Wait for the round duration
+                await delay(10000);
+                
+                // Remove the listener
+                sock.ev.off('messages.upsert', messageHandler);
+                
+                // Process eliminations
+                let eliminatedPlayers = [];
+                let survivors = [];
+                
+                for (let player of remainingPlayers) {
+                    const playerSentMessage = messageTracker.get(player.id);
+                    
+                    if (isGreenLight) {
+                        // GREEN LIGHT: Must send message
+                        if (!playerSentMessage) {
+                            eliminatedPlayers.push(player);
+                            try {
+                                // KICK THE PLAYER
+                                await sock.groupParticipantsUpdate(chatId, [player.id], "remove");
+                                await sock.sendMessage(chatId, {
+                                    text: `❌ @${player.id.split("@")[0]} was ELIMINATED! (Did not send message during Green Light) 🚫`,
+                                    mentions: [player.id]
+                                });
+                            } catch (kickError) {
+                                console.error("Failed to kick:", kickError);
+                                await sock.sendMessage(chatId, {
+                                    text: `⚠️ Failed to kick @${player.id.split("@")[0]}, but they are eliminated from the game.`,
+                                    mentions: [player.id]
+                                });
+                                eliminatedPlayers.push(player);
+                            }
+                        } else {
+                            survivors.push(player);
+                        }
+                    } else {
+                        // RED LIGHT: Must NOT send message
+                        if (playerSentMessage) {
+                            eliminatedPlayers.push(player);
+                            try {
+                                // KICK THE PLAYER
+                                await sock.groupParticipantsUpdate(chatId, [player.id], "remove");
+                                await sock.sendMessage(chatId, {
+                                    text: `❌ @${player.id.split("@")[0]} was ELIMINATED! (Sent message during Red Light) 🚫`,
+                                    mentions: [player.id]
+                                });
+                            } catch (kickError) {
+                                console.error("Failed to kick:", kickError);
+                                await sock.sendMessage(chatId, {
+                                    text: `⚠️ Failed to kick @${player.id.split("@")[0]}, but they are eliminated from the game.`,
+                                    mentions: [player.id]
+                                });
+                                eliminatedPlayers.push(player);
+                            }
+                        } else {
+                            survivors.push(player);
+                        }
+                    }
+                }
+                
+                // Update remaining players
+                remainingPlayers = survivors;
+                
+                // Round summary
                 await sock.sendMessage(chatId, {
-                    text: `🏆 *Congratulations @${remainingPlayers[0].id.split("@")[0]} !*\n_You Survived the Squid Game!_ 🎉`,
-                    mentions: [remainingPlayers[0].id]
+                    text: `📊 *Round ${round} Results:*\n`
+                        + `🟢 Survivors: ${remainingPlayers.length}\n`
+                        + `🔴 Eliminated: ${eliminatedPlayers.length}\n`
+                        + `${remainingPlayers.length > 0 ? `\n👥 Still in game: ${remainingPlayers.map(p => `@${p.id.split("@")[0]}`).join(', ')}` : ''}`,
+                    mentions: remainingPlayers.map(p => p.id)
+                });
+                
+                if (remainingPlayers.length <= 1) break;
+                
+                await delay(3000); // Pause between rounds
+            }
+            
+            // Game conclusion
+            if (remainingPlayers.length === 1) {
+                const winner = remainingPlayers[0];
+                await sock.sendMessage(chatId, {
+                    text: `🎉 🎉 🎉\n\n🏆 *CONGRATULATIONS @${winner.id.split("@")[0]}!*\n\n_You are the SOLE SURVIVOR of the Squid Game!_\n\n💰 Prize: Eternal glory and bragging rights! 🎉`,
+                    mentions: [winner.id]
                 });
             } else if (remainingPlayers.length > 1) {
                 await sock.sendMessage(chatId, {
-                    text: `🏆 *Game Over!* Multiple survivors: ${remainingPlayers.map(p => `@${p.id.split("@")[0]}`).join(', ')}`,
+                    text: `🏁 *Game Over!*\n\nMultiple survivors:\n${remainingPlayers.map(p => `🎖️ @${p.id.split("@")[0]}`).join('\n')}\n\nWell played everyone!`,
                     mentions: remainingPlayers.map(p => p.id)
+                });
+            } else {
+                await sock.sendMessage(chatId, {
+                    text: `💀 *Game Over!*\n\nEVERYONE WAS ELIMINATED!\n\nThe Squid Game has no winner this time...`
                 });
             }
 
         } catch (error) {
             console.error("Error in squidgame command:", error);
             await sock.sendMessage(chatId, { 
-                text: "❌ An error occurred while launching Squid Game.",
+                text: "❌ An error occurred while running Squid Game.",
                 quoted: message 
             });
         }
